@@ -7,6 +7,7 @@ import {
 import LoadingOverlay from "../../../components/common/LoadingOverlay";
 import SuccessDialog from "../../../components/common/SuccessDialog";
 import ErrorDialog from "../../../components/common/ErrorDialog";
+import { S3UploadService } from "../../../services/S3UploadService";
 import {
   InformationCircleIcon,
   CalendarIcon,
@@ -23,6 +24,7 @@ const AboutPageManagement: React.FC = () => {
   const [showErrorDialog, setShowErrorDialog] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [isUploading, setIsUploading] = useState(false);
 
   useEffect(() => {
     loadAboutPageContent();
@@ -60,6 +62,52 @@ const AboutPageManagement: React.FC = () => {
       setShowErrorDialog(true);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleImageUpload = async (file: File, itemIndex: number): Promise<string | null> => {
+    const s3Service = S3UploadService.getInstance();
+    const validation = s3Service.validateImageFile(file);
+
+    if (!validation.isValid) {
+      setErrorMessage(validation.error || "Invalid file");
+      setShowErrorDialog(true);
+      return null;
+    }
+
+    try {
+      setIsUploading(true);
+      const uploadResult = await s3Service.uploadImage(file, "about-page-images");
+
+      if (uploadResult.success && uploadResult.url) {
+        setSuccessMessage("Image uploaded successfully!");
+        setShowSuccessDialog(true);
+        return uploadResult.url;
+      } else {
+        setErrorMessage(uploadResult.error || "Failed to upload image");
+        setShowErrorDialog(true);
+        return null;
+      }
+    } catch (error) {
+      setErrorMessage("Failed to upload image. Please try again.");
+      setShowErrorDialog(true);
+      return null;
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleImageDelete = async (imageUrl: string): Promise<boolean> => {
+    try {
+      const s3Service = S3UploadService.getInstance();
+      await s3Service.deleteImage(imageUrl);
+      setSuccessMessage("Image deleted successfully!");
+      setShowSuccessDialog(true);
+      return true;
+    } catch (error) {
+      setErrorMessage("Failed to delete image. Please try again.");
+      setShowErrorDialog(true);
+      return false;
     }
   };
 
@@ -356,6 +404,24 @@ const AboutPageManagement: React.FC = () => {
                     onSubmit={async (e) => {
                       e.preventDefault();
                       const formData = new FormData(e.currentTarget);
+                      
+                      let imageUrl = aboutPageData.items.find(item => item.display_order === 1)?.image_url || '';
+                      
+                      // Handle image upload if a new file is selected
+                      const imageFile = formData.get("feature1_image") as File;
+                      if (imageFile && imageFile.size > 0) {
+                        const uploadedUrl = await handleImageUpload(imageFile, 1);
+                        if (uploadedUrl) {
+                          // Delete old image if it exists
+                          if (imageUrl) {
+                            await handleImageDelete(imageUrl);
+                          }
+                          imageUrl = uploadedUrl;
+                        } else {
+                          return; // Stop if upload failed
+                        }
+                      }
+                      
                       try {
                         setLoading(true);
 
@@ -366,6 +432,7 @@ const AboutPageManagement: React.FC = () => {
                         const itemData = {
                           title: formData.get("feature1_title") as string,
                           content: formData.get("feature1_content") as string,
+                          image_url: imageUrl,
                           display_order: 1,
                           is_active: true,
                           section_id: aboutPageData.section?.id,
@@ -428,12 +495,60 @@ const AboutPageManagement: React.FC = () => {
                         required
                       />
                     </div>
+                    
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Feature Image (Optional)
+                      </label>
+                      <input
+                        type="file"
+                        name="feature1_image"
+                        accept="image/*"
+                        disabled={isUploading}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-indigo-500 disabled:opacity-50"
+                      />
+                      {isUploading && (
+                        <div className="mt-2 text-sm text-blue-600">
+                          Uploading image...
+                        </div>
+                      )}
+                      {aboutPageData.items.find(item => item.display_order === 1)?.image_url && (
+                        <div className="mt-3">
+                          <img
+                            src={aboutPageData.items.find(item => item.display_order === 1)?.image_url}
+                            alt="Feature 1 preview"
+                            className="w-full max-w-md h-32 object-cover rounded border"
+                          />
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const imageUrl = aboutPageData.items.find(item => item.display_order === 1)?.image_url;
+                              if (imageUrl && await handleImageDelete(imageUrl)) {
+                                // Update the item to remove image_url
+                                const existingItem = aboutPageData.items.find(item => item.display_order === 1);
+                                if (existingItem) {
+                                  await ContentRepository.updateContentItem(existingItem.id, {
+                                    ...existingItem,
+                                    image_url: null
+                                  });
+                                  await loadAboutPageContent();
+                                }
+                              }
+                            }}
+                            className="mt-2 text-sm text-red-600 hover:text-red-800"
+                          >
+                            Remove Image
+                          </button>
+                        </div>
+                      )}
+                    </div>
                     <div className="flex justify-end">
                       <button
                         type="submit"
+                        disabled={isUploading}
                         className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
                       >
-                        Update Feature 1
+                        {isUploading ? 'Uploading...' : 'Update Feature 1'}
                       </button>
                     </div>
                   </form>
@@ -453,6 +568,24 @@ const AboutPageManagement: React.FC = () => {
                     onSubmit={async (e) => {
                       e.preventDefault();
                       const formData = new FormData(e.currentTarget);
+                      
+                      let imageUrl = aboutPageData.items.find(item => item.display_order === 2)?.image_url || '';
+                      
+                      // Handle image upload if a new file is selected
+                      const imageFile = formData.get("feature2_image") as File;
+                      if (imageFile && imageFile.size > 0) {
+                        const uploadedUrl = await handleImageUpload(imageFile, 2);
+                        if (uploadedUrl) {
+                          // Delete old image if it exists
+                          if (imageUrl) {
+                            await handleImageDelete(imageUrl);
+                          }
+                          imageUrl = uploadedUrl;
+                        } else {
+                          return; // Stop if upload failed
+                        }
+                      }
+                      
                       try {
                         setLoading(true);
                         let existingItem = aboutPageData.items.find(
@@ -462,6 +595,7 @@ const AboutPageManagement: React.FC = () => {
                         const itemData = {
                           title: formData.get("feature2_title") as string,
                           content: formData.get("feature2_content") as string,
+                          image_url: imageUrl,
                           display_order: 2,
                           is_active: true,
                           section_id: aboutPageData.section?.id,
@@ -524,12 +658,60 @@ const AboutPageManagement: React.FC = () => {
                         required
                       />
                     </div>
+                    
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Feature Image (Optional)
+                      </label>
+                      <input
+                        type="file"
+                        name="feature2_image"
+                        accept="image/*"
+                        disabled={isUploading}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent disabled:opacity-50"
+                      />
+                      {isUploading && (
+                        <div className="mt-2 text-sm text-blue-600">
+                          Uploading image...
+                        </div>
+                      )}
+                      {aboutPageData.items.find(item => item.display_order === 2)?.image_url && (
+                        <div className="mt-3">
+                          <img
+                            src={aboutPageData.items.find(item => item.display_order === 2)?.image_url}
+                            alt="Feature 2 preview"
+                            className="w-full max-w-md h-32 object-cover rounded border"
+                          />
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const imageUrl = aboutPageData.items.find(item => item.display_order === 2)?.image_url;
+                              if (imageUrl && await handleImageDelete(imageUrl)) {
+                                // Update the item to remove image_url
+                                const existingItem = aboutPageData.items.find(item => item.display_order === 2);
+                                if (existingItem) {
+                                  await ContentRepository.updateContentItem(existingItem.id, {
+                                    ...existingItem,
+                                    image_url: null
+                                  });
+                                  await loadAboutPageContent();
+                                }
+                              }
+                            }}
+                            className="mt-2 text-sm text-red-600 hover:text-red-800"
+                          >
+                            Remove Image
+                          </button>
+                        </div>
+                      )}
+                    </div>
                     <div className="flex justify-end">
                       <button
                         type="submit"
+                        disabled={isUploading}
                         className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
                       >
-                        Update Feature 2
+                        {isUploading ? 'Uploading...' : 'Update Feature 2'}
                       </button>
                     </div>
                   </form>
@@ -551,6 +733,24 @@ const AboutPageManagement: React.FC = () => {
                     onSubmit={async (e) => {
                       e.preventDefault();
                       const formData = new FormData(e.currentTarget);
+                      
+                      let imageUrl = aboutPageData.items.find(item => item.display_order === 3)?.image_url || '';
+                      
+                      // Handle image upload if a new file is selected
+                      const imageFile = formData.get("feature3_image") as File;
+                      if (imageFile && imageFile.size > 0) {
+                        const uploadedUrl = await handleImageUpload(imageFile, 3);
+                        if (uploadedUrl) {
+                          // Delete old image if it exists
+                          if (imageUrl) {
+                            await handleImageDelete(imageUrl);
+                          }
+                          imageUrl = uploadedUrl;
+                        } else {
+                          return; // Stop if upload failed
+                        }
+                      }
+                      
                       try {
                         setLoading(true);
                         let existingItem = aboutPageData.items.find(
@@ -560,6 +760,7 @@ const AboutPageManagement: React.FC = () => {
                         const itemData = {
                           title: formData.get("feature3_title") as string,
                           content: formData.get("feature3_content") as string,
+                          image_url: imageUrl,
                           display_order: 3,
                           is_active: true,
                           section_id: aboutPageData.section?.id,
@@ -622,12 +823,60 @@ const AboutPageManagement: React.FC = () => {
                         required
                       />
                     </div>
+                    
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Feature Image (Optional)
+                      </label>
+                      <input
+                        type="file"
+                        name="feature3_image"
+                        accept="image/*"
+                        disabled={isUploading}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent disabled:opacity-50"
+                      />
+                      {isUploading && (
+                        <div className="mt-2 text-sm text-blue-600">
+                          Uploading image...
+                        </div>
+                      )}
+                      {aboutPageData.items.find(item => item.display_order === 3)?.image_url && (
+                        <div className="mt-3">
+                          <img
+                            src={aboutPageData.items.find(item => item.display_order === 3)?.image_url}
+                            alt="Feature 3 preview"
+                            className="w-full max-w-md h-32 object-cover rounded border"
+                          />
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const imageUrl = aboutPageData.items.find(item => item.display_order === 3)?.image_url;
+                              if (imageUrl && await handleImageDelete(imageUrl)) {
+                                // Update the item to remove image_url
+                                const existingItem = aboutPageData.items.find(item => item.display_order === 3);
+                                if (existingItem) {
+                                  await ContentRepository.updateContentItem(existingItem.id, {
+                                    ...existingItem,
+                                    image_url: null
+                                  });
+                                  await loadAboutPageContent();
+                                }
+                              }
+                            }}
+                            className="mt-2 text-sm text-red-600 hover:text-red-800"
+                          >
+                            Remove Image
+                          </button>
+                        </div>
+                      )}
+                    </div>
                     <div className="flex justify-end">
                       <button
                         type="submit"
+                        disabled={isUploading}
                         className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
                       >
-                        Update Feature 3
+                        {isUploading ? 'Uploading...' : 'Update Feature 3'}
                       </button>
                     </div>
                   </form>
@@ -647,6 +896,24 @@ const AboutPageManagement: React.FC = () => {
                     onSubmit={async (e) => {
                       e.preventDefault();
                       const formData = new FormData(e.currentTarget);
+                      
+                      let imageUrl = aboutPageData.items.find(item => item.display_order === 4)?.image_url || '';
+                      
+                      // Handle image upload if a new file is selected
+                      const imageFile = formData.get("feature4_image") as File;
+                      if (imageFile && imageFile.size > 0) {
+                        const uploadedUrl = await handleImageUpload(imageFile, 4);
+                        if (uploadedUrl) {
+                          // Delete old image if it exists
+                          if (imageUrl) {
+                            await handleImageDelete(imageUrl);
+                          }
+                          imageUrl = uploadedUrl;
+                        } else {
+                          return; // Stop if upload failed
+                        }
+                      }
+                      
                       try {
                         setLoading(true);
                         let existingItem = aboutPageData.items.find(
@@ -656,6 +923,7 @@ const AboutPageManagement: React.FC = () => {
                         const itemData = {
                           title: formData.get("feature4_title") as string,
                           content: formData.get("feature4_content") as string,
+                          image_url: imageUrl,
                           display_order: 4,
                           is_active: true,
                           section_id: aboutPageData.section?.id,
@@ -717,12 +985,60 @@ const AboutPageManagement: React.FC = () => {
                         required
                       />
                     </div>
+                    
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Feature Image (Optional)
+                      </label>
+                      <input
+                        type="file"
+                        name="feature4_image"
+                        accept="image/*"
+                        disabled={isUploading}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent disabled:opacity-50"
+                      />
+                      {isUploading && (
+                        <div className="mt-2 text-sm text-blue-600">
+                          Uploading image...
+                        </div>
+                      )}
+                      {aboutPageData.items.find(item => item.display_order === 4)?.image_url && (
+                        <div className="mt-3">
+                          <img
+                            src={aboutPageData.items.find(item => item.display_order === 4)?.image_url}
+                            alt="Feature 4 preview"
+                            className="w-full max-w-md h-32 object-cover rounded border"
+                          />
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const imageUrl = aboutPageData.items.find(item => item.display_order === 4)?.image_url;
+                              if (imageUrl && await handleImageDelete(imageUrl)) {
+                                // Update the item to remove image_url
+                                const existingItem = aboutPageData.items.find(item => item.display_order === 4);
+                                if (existingItem) {
+                                  await ContentRepository.updateContentItem(existingItem.id, {
+                                    ...existingItem,
+                                    image_url: null
+                                  });
+                                  await loadAboutPageContent();
+                                }
+                              }
+                            }}
+                            className="mt-2 text-sm text-red-600 hover:text-red-800"
+                          >
+                            Remove Image
+                          </button>
+                        </div>
+                      )}
+                    </div>
                     <div className="flex justify-end">
                       <button
                         type="submit"
+                        disabled={isUploading}
                         className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
                       >
-                        Update Feature 4
+                        {isUploading ? 'Uploading...' : 'Update Feature 4'}
                       </button>
                     </div>
                   </form>

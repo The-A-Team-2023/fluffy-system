@@ -13,6 +13,7 @@ import LoadingOverlay from "../../../components/common/LoadingOverlay";
 import ConfirmDialog from "../../../components/common/ConfirmDialog";
 import SuccessDialog from "../../../components/common/SuccessDialog";
 import ErrorDialog from "../../../components/common/ErrorDialog";
+import { S3UploadService } from "../../../services/S3UploadService";
 
 const TestimonialsManagement: React.FC = () => {
   const [testimonials, setTestimonials] = useState<Testimonial[]>([]);
@@ -31,6 +32,7 @@ const TestimonialsManagement: React.FC = () => {
   const [filterActive, setFilterActive] = useState<
     "all" | "active" | "inactive"
   >("all");
+  const [isUploading, setIsUploading] = useState(false);
 
   const [formData, setFormData] = useState<{
     name: string;
@@ -39,6 +41,7 @@ const TestimonialsManagement: React.FC = () => {
     date: string;
     is_active: boolean;
     display_order: number;
+    image_url: string;
     image_file?: File;
     image_preview?: string;
     image_removed?: boolean;
@@ -49,6 +52,7 @@ const TestimonialsManagement: React.FC = () => {
     date: "",
     is_active: true,
     display_order: 0,
+    image_url: "",
     image_file: undefined,
     image_preview: "",
     image_removed: false,
@@ -85,13 +89,9 @@ const TestimonialsManagement: React.FC = () => {
   ];
 
   const validateImageFile = (file: File): string | null => {
-    if (!ALLOWED_TYPES.includes(file.type)) {
-      return `Invalid file type. Allowed types: ${ALLOWED_TYPES.join(", ")}`;
-    }
-    if (file.size > MAX_SIZE_MB * 1024 * 1024) {
-      return `File size too large. Maximum allowed size is ${MAX_SIZE_MB}MB.`;
-    }
-    return null;
+    const s3Service = S3UploadService.getInstance();
+    const validation = s3Service.validateImageFile(file);
+    return validation.isValid ? null : validation.error || "Invalid file";
   };
 
   const handleCreate = () => {
@@ -100,6 +100,7 @@ const TestimonialsManagement: React.FC = () => {
       name: "",
       title: "",
       content: "",
+      image_url: "",
       image_file: undefined,
       image_preview: "",
       date: "",
@@ -109,13 +110,28 @@ const TestimonialsManagement: React.FC = () => {
     setIsModalOpen(true);
   };
 
-  const handleRemoveImage = () => {
-    setFormData((prev) => ({
-      ...prev,
-      image_file: undefined,
-      image_preview: "",
-      image_removed: true,
-    }));
+  const handleRemoveImage = async () => {
+    try {
+      // If there's an existing image URL, delete it from S3
+      if (formData.image_url) {
+        const s3Service = S3UploadService.getInstance();
+        await s3Service.deleteImage(formData.image_url);
+      }
+      
+      setFormData((prev) => ({
+        ...prev,
+        image_url: "",
+        image_file: undefined,
+        image_preview: "",
+        image_removed: true,
+      }));
+      
+      setSuccessMessage("Image removed successfully!");
+      setShowSuccessDialog(true);
+    } catch (error) {
+      setErrorMessage("Failed to remove image. Please try again.");
+      setShowErrorDialog(true);
+    }
   };
 
   const handleEdit = (testimonial: Testimonial) => {
@@ -124,8 +140,9 @@ const TestimonialsManagement: React.FC = () => {
       name: testimonial.name,
       title: testimonial.title,
       content: testimonial.content,
+      image_url: testimonial.image_url || "",
       image_file: undefined,
-      image_preview: testimonial.image_base64 || "",
+      image_preview: testimonial.image_url || testimonial.image_base64 || "",
       date: testimonial.date || "",
       is_active: testimonial.is_active,
       display_order: testimonial.display_order,
@@ -154,33 +171,72 @@ const TestimonialsManagement: React.FC = () => {
     setShowConfirmDialog(true);
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const error = validateImageFile(file);
-    if (error) {
-      setErrorMessage(error);
+    const s3Service = S3UploadService.getInstance();
+    const validation = s3Service.validateImageFile(file);
+
+    if (!validation.isValid) {
+      setErrorMessage(validation.error || "Invalid file");
       setShowErrorDialog(true);
       return;
     }
 
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const base64String = reader.result as string;
-      setFormData((prev) => ({
-        ...prev,
-        image_file: file,
-        image_preview: base64String,
-      }));
-    };
-    reader.readAsDataURL(file);
+    try {
+      setIsUploading(true);
+
+      // Create preview
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const preview = reader.result as string;
+        setFormData((prev) => ({
+          ...prev,
+          image_file: file,
+          image_preview: preview,
+        }));
+      };
+      reader.readAsDataURL(file);
+
+      // Upload to S3
+      const uploadResult = await s3Service.uploadImage(file, "testimonial-images");
+
+      if (uploadResult.success && uploadResult.url) {
+        // Delete old image if it exists
+        if (formData.image_url) {
+          try {
+            await s3Service.deleteImage(formData.image_url);
+          } catch (error) {
+            console.warn('Failed to delete old image:', error);
+          }
+        }
+        
+        setFormData((prev) => ({
+          ...prev,
+          image_url: uploadResult.url as string,
+        }));
+        
+        setSuccessMessage("Image uploaded successfully!");
+        setShowSuccessDialog(true);
+      } else {
+        setErrorMessage(uploadResult.error || "Failed to upload image");
+        setShowErrorDialog(true);
+      }
+    } catch (error) {
+      setErrorMessage("Failed to upload image. Please try again.");
+      setShowErrorDialog(true);
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
       setLoading(true);
+
+      const { image_file, image_preview, image_removed, ...sanitizedData } = formData;
 
       const payload: any = {
         name: formData.name,
@@ -189,14 +245,13 @@ const TestimonialsManagement: React.FC = () => {
         date: formData.date || "",
         is_active: formData.is_active,
         display_order: formData.display_order,
+        image_url: formData.image_url || null,
       };
 
-      if (formData.image_preview?.startsWith("data:image")) {
-        payload.image_base64 = formData.image_preview;
-      }
-
-      if (formData.image_removed) {
-        payload.image_removed = true;
+      // Handle image removal
+      if (image_removed) {
+        payload.image_url = null;
+        payload.image_base64 = null;
       }
 
       if (editingTestimonial) {
@@ -573,23 +628,30 @@ const TestimonialsManagement: React.FC = () => {
                     type="file"
                     accept="image/*"
                     onChange={handleFileChange}
-                    className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                    disabled={isUploading}
+                    className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-green-500 focus:border-transparent disabled:opacity-50"
                   />
+                  {isUploading && (
+                    <div className="mt-2 text-sm text-blue-600">
+                      Uploading image...
+                    </div>
+                  )}
 
-                  {formData.image_preview && (
+                  {(formData.image_preview || formData.image_url) && (
                     <div className="mt-4 relative">
                       <p className="text-sm text-gray-600 mb-1">Preview:</p>
                       <img
-                        key={formData.image_preview}
-                        src={formData.image_preview}
+                        key={formData.image_preview || formData.image_url}
+                        src={formData.image_preview || formData.image_url}
                         alt="Preview"
                         className="h-48 w-auto rounded-lg border"
                       />
                       <button
                         type="button"
                         onClick={handleRemoveImage}
+                        disabled={isUploading}
                         title="Remove Image"
-                        className="absolute top-0 right-0 bg-white p-1 rounded-full shadow hover:bg-red-50"
+                        className="absolute top-0 right-0 bg-white p-1 rounded-full shadow hover:bg-red-50 disabled:opacity-50"
                       >
                         <TrashIcon className="w-5 h-5 text-red-600" />
                       </button>
@@ -652,11 +714,10 @@ const TestimonialsManagement: React.FC = () => {
               <div className="flex gap-4 pt-4 border-t border-gray-200">
                 <button
                   type="submit"
-                  className="flex-1 bg-green-600 hover:bg-green-700 text-white py-3 px-4 rounded-lg font-medium transition-colors"
+                  disabled={isUploading}
+                  className="flex-1 bg-green-600 hover:bg-green-700 text-white py-3 px-4 rounded-lg font-medium transition-colors disabled:opacity-50"
                 >
-                  {editingTestimonial
-                    ? "Update Testimonial"
-                    : "Create Testimonial"}
+                  {isUploading ? "Uploading..." : editingTestimonial ? "Update Testimonial" : "Create Testimonial"}
                 </button>
                 <button
                   type="button"
